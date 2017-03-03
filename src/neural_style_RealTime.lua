@@ -6,6 +6,9 @@ require 'optim'
 require 'loadcaffe'
 require 'TransformNet'
 require 'Dataloader'
+require 'cudnn'
+require 'cutorch'
+require 'cunn'
 
 local cjson = require 'cjson'
 
@@ -20,9 +23,9 @@ cmd:option('-multigpu_strategy', '', 'Index of layers to split the network acros
 
 --Optimization options
 cmd:option('-content_weight', 5e0)
-cmd:option('-style_weight', 1e2)
+cmd:option('-style_weight', 1e5)
 cmd:option('-tv_weight', 1e-3)
-cmd:option('-num_iterations', 1000)
+cmd:option('-num_iterations', 5000)
 cmd:option('normalize_gradients', false)    --?
 cmd:option('-optimizer', 'adam', 'lbfgs|adam|sgd')
 cmd:option('-learning_rate', 1e1)
@@ -36,7 +39,7 @@ cmd:option('-batch_size', 4)
 cmd:option('-max_train', -1, 'max index of trainset to train')
 
 --Output options
-cmd:option('-print_iter', 50)
+cmd:option('-print_iter', 10)
 cmd:option('-save_iter', 100)
 cmd:option('-output_image', '../images/output/out.jpg')
 
@@ -58,12 +61,14 @@ cmd:option('-style_layers', 'relu1_1,relu2_1,relu3_1,relu4_1,relu5_1', 'layers f
 
 
 local function main(params)
-	local dtype, multigpu = setup_gpu(params)
+	--local dtype, multigpu = setup_gpu(params)
+	local dtype = 'torch.CudaTensor'
+	local multigpu = false
 	local loadcaffe_backend = params.backend
 	assert(params.backend == 'nn' or params.backend == 'cudnn', 'only nn|cudnn are provided for backend')
 
 	--building Image Transform Network
-	TFNet = TransformNet(params.normalization)
+	TFNet = TransformNet(params.normalization):type(dtype)
 	if params.backend == 'cudnn' then 
 		cudnn.convert(TFNet, cudnn)
 	end
@@ -203,6 +208,7 @@ local function main(params)
 	local dy = rand_img.new(#y):zero():type(dtype)
 	print(par:size())
 	print(gradParams:size())
+	print(torch.typename(gradParams))
 
 	local function maybe_print(t,loss)              --print the losses
 		local verbose = (params.print_iter > 0 and t %params.print_iter == 0)
@@ -214,9 +220,6 @@ local function main(params)
 			end
 			for i,loss_mod in ipairs(style_losses) do
 				print(string.format('Style %d loss: %f', i, loss_mod.loss))
-			end
-			for i,loss_mod in ipairs(tv_losses) do
-				print(string.format('tv loss %d: %f', i, loss_mod.loss))
 			end
 			print(string.format('Total loss: %f', loss))
 		end
@@ -279,9 +282,6 @@ local function main(params)
 				for _,mod in ipairs(style_losses) do
 					val_loss = val_loss + mod.loss 
 				end
-				for _,mod in ipairs(tv_losses) do
-					val_loss = val_loss + mod.loss 
-				end
 			end
 			val_loss = val_loss / num_batches
 			print(string.format('val_loss: %f', val_loss))
@@ -306,8 +306,9 @@ local function main(params)
 				cudnn.convert(FullNet, nn)
 			end
 			FullNet:float()
-			checkpoint.model = FullNet
-			filename = string.format('%s_%d.json', params.checkpoint_name, t)
+			--checkpoint.full = FullNet
+			checkpoint.model = TFNet
+			filename = string.format('%s_%d.t7', params.checkpoint_name, t)
 			torch.save(filename, checkpoint)
 
 			--convert the model back
@@ -335,7 +336,7 @@ local function main(params)
 		for i = 1, #content_losses do         
 			content_losses[i].mode = 'Capture'   --Forward will not update image x   
 		end
-		print('Capturing content images feature maps')
+		--print('Capturing content images feature maps')
 		LossNet:forward(batchInput)    --Capture ContentLoss layer feature
 		for i = 1, #content_losses do
 			content_losses[i].mode = 'loss'   --set to loss mode
@@ -346,24 +347,27 @@ local function main(params)
 
 		--calculate loss and grad
 		gradParams:zero()
-		print("tfnet forward...")
+		--print("tfnet forward...")
 		local mid = TFNet:forward(batchInput_pad)
-		print("lossnet forward...")
+		--print("lossnet forward...")
 		LossNet:forward(mid)
-		print("tfnet backward...")
+		--print("lossnet backward...")
 		local grad_mid = LossNet:updateGradInput(mid, dy)
-		print("lossnet backward...")
-		print(TFNet)
+		--print("tfnet backward...")
 		TFNet:backward(batchInput_pad, grad_mid)
-		print("finish")
+		--print("finish")
+
+		--[[
+		print("full net forward")
+		FullNet:forward(batchInput_pad)
+		print("fullnet backward")
+		FullNet:backward(batchInput_pad, dy)
+		--]]
 		local loss = 0
 		for _, mod in ipairs(content_losses) do
 			loss = loss + mod.loss 
 		end
 		for _,mod in ipairs(style_losses) do
-			loss = loss + mod.loss 
-		end
-		for _,mod in ipairs(tv_losses) do
 			loss = loss + mod.loss 
 		end
 		maybe_print(iter, loss)
@@ -529,7 +533,7 @@ function Gram:updateOutput(input)
 		self.output:resize(N, C, C)
 		self.output:bmm(x_flat, x_flat:transpose(2, 3))
 	end
-	self.output:div(C * H * W)   --normalize
+	--self.output:div(C * H * W)   --normalize
 	return self.output
 end
 
@@ -550,7 +554,7 @@ function Gram:updateGradInput(input, gradOutput)    --?
 		self.buffer:baddbmm(gradOutput:transpose(2, 3), x_flat)
 		self.gradInput = self.buffer:view(N, C, H, W)
 	end
-	self.buffer:div(C * H *W)
+	--self.buffer:div(C * H *W)
 	assert(self.gradInput:isContiguous())
 	return self.gradInput
 end
