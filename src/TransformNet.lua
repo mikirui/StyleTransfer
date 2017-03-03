@@ -49,7 +49,7 @@ local function ConvBlock(conv_type, norm_type, activate, i_dim, o_dim, filter, s
 	return conv_block
 end
 
-function TransformNet(norm_type)
+function TransformNet(norm_type, tanh_constant)
 	local tf_net = nn.Sequential()                    --e.g. input = [3,256,256]
 	--tf_net:add(nn.SpatialReflectionPadding(40,40,40,40))  --[3,336,336]
 	tf_net:add(ConvBlock('Down', norm_type, 'ReLU', 3, 32, 9, 1, 4))  --[32,336,336]
@@ -65,6 +65,7 @@ function TransformNet(norm_type)
 	tf_net:add(ConvBlock('Up', norm_type, 'ReLU', 128, 64, 3, 2, 1, 1))   --[64,128,128]
 	tf_net:add(ConvBlock('Up', norm_type, 'ReLU', 64, 32, 3, 2, 1, 1))     --[32, 256, 256]
 	tf_net:add(ConvBlock('Down', norm_type, 'Tanh', 32, 3, 9, 1, 4))      --[3, 256, 256]
+	tf_net:add(nn.MulConstant(tanh_constant))
 	return tf_net
 end
 
