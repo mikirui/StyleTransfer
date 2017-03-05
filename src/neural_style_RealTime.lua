@@ -22,8 +22,8 @@ cmd:option('-gpu', '0', 'Zero-indexed ID of the GPU to use; for CPU mode set -gp
 cmd:option('-multigpu_strategy', '', 'Index of layers to split the network across GPUs')
 
 --Optimization options
-cmd:option('-content_weight', 1.0)
-cmd:option('-style_weight', 5.0)
+cmd:option('-content_weight', 100.0)
+cmd:option('-style_weight', 1e-2)
 cmd:option('-tv_weight', 1e-6)
 cmd:option('-num_iterations', 40000)
 cmd:option('normalize_gradients', false)    --?
@@ -33,16 +33,20 @@ cmd:option('-lr_decay_factor', 0.5)
 cmd:option('-lr_decay_every', -1)
 cmd:option('-lbfgs_num_correction', 0)     --?
 cmd:option('-tanh_mul', 150)
+cmd:option('-normalization', 'instance', 'instance|batch')
+cmd:option('-num_val_batches', 15, 'number of batches to evaluate')
+cmd:option('-load_from_checkpoint', false)
 
 --DataLoader options
 cmd:option('-h5_file', '/dev_data/wrz/mscoco_256.h5')
 cmd:option('-batch_size', 4)
-cmd:option('-max_train', -1, 'max index of trainset to train')
+cmd:option('-max_train', 82780, 'max index of trainset to train')  --max trainset index 82783
 
 --Output options
 cmd:option('-print_iter', 100)
 cmd:option('-save_iter', 800)
 cmd:option('-output_image', '../images/output/out.jpg')
+cmd:option('-checkpoint_name', '../log/checkpoint2')
 
 --Other options
 cmd:option('-style_scale', 1.0)
@@ -53,9 +57,6 @@ cmd:option('-model_file', '../models/VGG_ILSVRC_19_layers.caffemodel')
 cmd:option('-backend', 'cudnn', 'nn|cudnn')
 cmd:option('-cudnn_autotune', false)   --?
 cmd:option('-seed', -1)
-cmd:option('-normalization', 'instance', 'instance|batch')
-cmd:option('-num_val_batches', 15, 'number of batches to evaluate')
-cmd:option('-checkpoint_name', '../log/checkpoint')
 
 cmd:option('-content_layers', 'relu4_2', 'layers for content')
 cmd:option('-style_layers', 'relu1_1,relu2_1,relu3_1,relu4_1,relu5_1', 'layers for style')
@@ -69,7 +70,11 @@ local function main(params)
 	assert(params.backend == 'nn' or params.backend == 'cudnn', 'only nn|cudnn are provided for backend')
 
 	--building Image Transform Network
-	TFNet = TransformNet(params.normalization, params.tanh_mul):type(dtype)
+	if(params.load_from_checkpoint == true) then    --save from checkpoint
+		TFNet = torch.load(string.format("%s.t7",params.checkpoint_name)).model
+	else
+		TFNet = TransformNet(params.normalization, params.tanh_mul):type(dtype)
+	end
 	if params.backend == 'cudnn' then 
 		cudnn.convert(TFNet, cudnn)
 	end
@@ -351,18 +356,8 @@ local function main(params)
 		local mid = TFNet:forward(batchInput_pad)
 		--print("lossnet forward...")
 		LossNet:forward(mid)
-		if(iter == 1) then torch.save('../log/iter1.t7', mid) end
-		if(iter == 10) then torch.save('../log/iter10.t7', mid) end
-		if(iter == 50) then torch.save('../log/iter50.t7', mid) end
-		if(iter == 100) then torch.save('../log/iter100.t7', mid) end
-		if(iter == 200) then torch.save('../log/iter200.t7', mid) end
 		--print("lossnet backward...")
 		local grad_mid = LossNet:updateGradInput(mid, dy)
-		if(iter == 1) then torch.save('../log/iter1_grad.t7', grad_mid) end
-		if(iter == 10) then torch.save('../log/iter10_grad.t7', grad_mid) end
-		if(iter == 50) then torch.save('../log/iter50_grad.t7', grad_mid) end
-		if(iter == 100) then torch.save('../log/iter100_grad.t7', grad_mid) end
-		if(iter == 200) then torch.save('../log/iter200_grad.t7', grad_mid) end
 		--print("tfnet backward...")
 		TFNet:backward(batchInput_pad, grad_mid)
 		--print("finish")
@@ -610,6 +605,15 @@ function StyleLoss:updateGradInput(input, gradOutput)
 			self.gradInput:div(torch.norm(self.gradInput, 1) + 1e-8)
 		end
 		self.gradInput:mul(self.strength)
+		local n1,c1,h1,w1 = self.gradInput:size(1), self.gradInput:size(2), self.gradInput:size(3), self.gradInput:size(4)
+		local n2,c2,h2,w2 = gradOutput:size(1), gradOutput:size(2), gradOutput:size(3), gradOutput:size(4)
+		if(n1 ~= n2 or c1 ~= c2 or h1 ~= h2 or w1 ~= w2) then
+			print("size do not match: ")
+			print("gradinput size: ")
+			print(self.gradInput:size())
+			print("gradoutput size: ")
+			print(gradOutput:size())
+		end
 		self.gradInput:add(gradOutput)
 	else
 		self.gradInput:resizeAs(gradOutput):copy(gradOutput)

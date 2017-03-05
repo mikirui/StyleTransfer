@@ -79,14 +79,14 @@ function preprocess_batch(img_batch)
 end 
 
 function deprocess_batch(img_batch)
-	assert(image_path:dim() == 4, 'img_batch should be N x C x H xW')
+	assert(img_batch:dim() == 4, 'img_batch should be N x C x H xW')
 	assert(img_batch:size(2) == 3, 'images should have 3 channels')
 
 	local mean_pixel = torch.FloatTensor({103.939, 116.779, 123.68})
 	mean_pixel = mean_pixel:view(1, 3, 1, 1):expandAs(img_batch)
 	img_batch = img_batch + mean_pixel
 	local perm = torch.LongTensor{3,2,1}
-	img_batch = img_batch:index(1, perm):div(255.0)
+	img_batch = img_batch:index(2, perm):div(255.0)
 	return img_batch
 end
 
